@@ -72,6 +72,10 @@ struct dmu_tx;
  */
 #define	OBJSET_CRYPT_PORTABLE_FLAGS_MASK	(0)
 
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wgnu-variable-sized-type-not-at-end"
+#endif
 typedef struct objset_phys {
 	dnode_phys_t os_meta_dnode;
 	zil_header_t os_zil_header;
@@ -88,6 +92,9 @@ typedef struct objset_phys {
 	char os_pad1[OBJSET_PHYS_SIZE_V3 - OBJSET_PHYS_SIZE_V2 -
 	    sizeof (dnode_phys_t)];
 } objset_phys_t;
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#endif
 
 typedef int (*dmu_objset_upgrade_cb_t)(objset_t *);
 
@@ -125,6 +132,7 @@ struct objset {
 	zfs_logbias_op_t os_logbias;
 	zfs_cache_type_t os_primary_cache;
 	zfs_cache_type_t os_secondary_cache;
+	zfs_prefetch_type_t os_prefetch;
 	zfs_sync_type_t os_sync;
 	zfs_redundant_metadata_type_t os_redundant_metadata;
 	uint64_t os_recordsize;

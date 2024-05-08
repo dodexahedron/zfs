@@ -25,9 +25,6 @@
  *
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/types.h>
 #include <sys/errno.h>
 #include <sys/nvpair.h>
@@ -59,7 +56,7 @@ zfs_vfs_ref(zfsvfs_t **zfvp)
 	return (error);
 }
 
-int
+boolean_t
 zfs_vfs_held(zfsvfs_t *zfsvfs)
 {
 	return (zfsvfs->z_vfs != NULL);

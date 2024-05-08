@@ -79,6 +79,9 @@ typedef struct abd {
 
 typedef int abd_iter_func_t(void *buf, size_t len, void *priv);
 typedef int abd_iter_func2_t(void *bufa, void *bufb, size_t len, void *priv);
+#if defined(__linux__) && defined(_KERNEL)
+typedef int abd_iter_page_func_t(struct page *, size_t, size_t, void *);
+#endif
 
 extern int zfs_abd_scatter_enabled;
 
@@ -86,10 +89,15 @@ extern int zfs_abd_scatter_enabled;
  * Allocations and deallocations
  */
 
+__attribute__((malloc))
 abd_t *abd_alloc(size_t, boolean_t);
+__attribute__((malloc))
 abd_t *abd_alloc_linear(size_t, boolean_t);
+__attribute__((malloc))
 abd_t *abd_alloc_gang(void);
+__attribute__((malloc))
 abd_t *abd_alloc_for_io(size_t, boolean_t);
+__attribute__((malloc))
 abd_t *abd_alloc_sametype(abd_t *, size_t);
 boolean_t abd_size_alloc_linear(size_t);
 void abd_gang_add(abd_t *, abd_t *, boolean_t);
@@ -120,6 +128,10 @@ void abd_release_ownership_of_buf(abd_t *);
 int abd_iterate_func(abd_t *, size_t, size_t, abd_iter_func_t *, void *);
 int abd_iterate_func2(abd_t *, abd_t *, size_t, size_t, size_t,
     abd_iter_func2_t *, void *);
+#if defined(__linux__) && defined(_KERNEL)
+int abd_iterate_page_func(abd_t *, size_t, size_t, abd_iter_page_func_t *,
+    void *);
+#endif
 void abd_copy_off(abd_t *, abd_t *, size_t, size_t, size_t);
 void abd_copy_from_buf_off(abd_t *, const void *, size_t, size_t);
 void abd_copy_to_buf_off(void *, abd_t *, size_t, size_t);
@@ -128,11 +140,11 @@ int abd_cmp_buf_off(abd_t *, const void *, size_t, size_t);
 void abd_zero_off(abd_t *, size_t, size_t);
 void abd_verify(abd_t *);
 
-void abd_raidz_gen_iterate(abd_t **cabds, abd_t *dabd,
-	ssize_t csize, ssize_t dsize, const unsigned parity,
+void abd_raidz_gen_iterate(abd_t **cabds, abd_t *dabd, size_t off,
+	size_t csize, size_t dsize, const unsigned parity,
 	void (*func_raidz_gen)(void **, const void *, size_t, size_t));
 void abd_raidz_rec_iterate(abd_t **cabds, abd_t **tabds,
-	ssize_t tsize, const unsigned parity,
+	size_t tsize, const unsigned parity,
 	void (*func_raidz_rec)(void **t, const size_t tsize, void **c,
 	const unsigned *mul),
 	const unsigned *mul);
@@ -208,6 +220,8 @@ void abd_fini(void);
 
 /*
  * Linux ABD bio functions
+ * Note: these are only needed to support vdev_classic. See comment in
+ * vdev_disk.c.
  */
 #if defined(__linux__) && defined(_KERNEL)
 unsigned int abd_bio_map_off(struct bio *, abd_t *, unsigned int, size_t);

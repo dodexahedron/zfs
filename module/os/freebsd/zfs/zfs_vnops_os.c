@@ -244,9 +244,15 @@ zfs_open(vnode_t **vpp, int flag, cred_t *cr)
 		return (SET_ERROR(EPERM));
 	}
 
-	/* Keep a count of the synchronous opens in the znode */
-	if (flag & O_SYNC)
-		atomic_inc_32(&zp->z_sync_cnt);
+	/*
+	 * Keep a count of the synchronous opens in the znode.  On first
+	 * synchronous open we must convert all previous async transactions
+	 * into sync to keep correct ordering.
+	 */
+	if (flag & O_SYNC) {
+		if (atomic_inc_32_nv(&zp->z_sync_cnt) == 1)
+			zil_async_to_sync(zfsvfs->z_log, zp->z_id);
+	}
 
 	zfs_exit(zfsvfs, FTAG);
 	return (0);
@@ -1053,7 +1059,7 @@ zfs_lookup(vnode_t *dvp, const char *nm, vnode_t **vpp,
  */
 int
 zfs_create(znode_t *dzp, const char *name, vattr_t *vap, int excl, int mode,
-    znode_t **zpp, cred_t *cr, int flag, vsecattr_t *vsecp, zuserns_t *mnt_ns)
+    znode_t **zpp, cred_t *cr, int flag, vsecattr_t *vsecp, zidmap_t *mnt_ns)
 {
 	(void) excl, (void) mode, (void) flag;
 	znode_t		*zp;
@@ -1405,7 +1411,7 @@ zfs_remove(znode_t *dzp, const char *name, cred_t *cr, int flags)
  */
 int
 zfs_mkdir(znode_t *dzp, const char *dirname, vattr_t *vap, znode_t **zpp,
-    cred_t *cr, int flags, vsecattr_t *vsecp, zuserns_t *mnt_ns)
+    cred_t *cr, int flags, vsecattr_t *vsecp, zidmap_t *mnt_ns)
 {
 	(void) flags, (void) vsecp;
 	znode_t		*zp;
@@ -1869,10 +1875,8 @@ zfs_readdir(vnode_t *vp, zfs_uio_t *uio, cred_t *cr, int *eofp,
 
 		ASSERT3S(outcount, <=, bufsize);
 
-		/* Prefetch znode */
 		if (prefetch)
-			dmu_prefetch(os, objnum, 0, 0, 0,
-			    ZIO_PRIORITY_SYNC_READ);
+			dmu_prefetch_dnode(os, objnum, ZIO_PRIORITY_SYNC_READ);
 
 		/*
 		 * Move to the next entry, fill in the previous offset.
@@ -2007,6 +2011,8 @@ zfs_getattr(vnode_t *vp, vattr_t *vap, int flags, cred_t *cr)
 	vap->va_size = zp->z_size;
 	if (vp->v_type == VBLK || vp->v_type == VCHR)
 		vap->va_rdev = zfs_cmpldev(rdev);
+	else
+		vap->va_rdev = 0;
 	vap->va_gen = zp->z_gen;
 	vap->va_flags = 0;	/* FreeBSD: Reset chflags(2) flags. */
 	vap->va_filerev = zp->z_seq;
@@ -2159,7 +2165,7 @@ zfs_getattr(vnode_t *vp, vattr_t *vap, int flags, cred_t *cr)
  *	vp - ctime updated, mtime updated if size changed.
  */
 int
-zfs_setattr(znode_t *zp, vattr_t *vap, int flags, cred_t *cr, zuserns_t *mnt_ns)
+zfs_setattr(znode_t *zp, vattr_t *vap, int flags, cred_t *cr, zidmap_t *mnt_ns)
 {
 	vnode_t		*vp = ZTOV(zp);
 	zfsvfs_t	*zfsvfs = zp->z_zfsvfs;
@@ -3420,7 +3426,7 @@ out:
 
 int
 zfs_rename(znode_t *sdzp, const char *sname, znode_t *tdzp, const char *tname,
-    cred_t *cr, int flags, uint64_t rflags, vattr_t *wo_vap, zuserns_t *mnt_ns)
+    cred_t *cr, int flags, uint64_t rflags, vattr_t *wo_vap, zidmap_t *mnt_ns)
 {
 	struct componentname scn, tcn;
 	vnode_t *sdvp, *tdvp;
@@ -3477,7 +3483,7 @@ fail:
  */
 int
 zfs_symlink(znode_t *dzp, const char *name, vattr_t *vap,
-    const char *link, znode_t **zpp, cred_t *cr, int flags, zuserns_t *mnt_ns)
+    const char *link, znode_t **zpp, cred_t *cr, int flags, zidmap_t *mnt_ns)
 {
 	(void) flags;
 	znode_t		*zp;
@@ -4203,6 +4209,10 @@ zfs_putpages(struct vnode *vp, vm_page_t *ma, size_t len, int flags,
 	}
 	zfs_vmobject_wunlock(object);
 
+	boolean_t commit = (flags & (zfs_vm_pagerput_sync |
+	    zfs_vm_pagerput_inval)) != 0 ||
+	    zfsvfs->z_os->os_sync == ZFS_SYNC_ALWAYS;
+
 	if (ncount == 0)
 		goto out;
 
@@ -4255,7 +4265,7 @@ zfs_putpages(struct vnode *vp, vm_page_t *ma, size_t len, int flags,
 		 * but that would make the locking messier
 		 */
 		zfs_log_write(zfsvfs->z_log, tx, TX_WRITE, zp, off,
-		    len, 0, NULL, NULL);
+		    len, commit, NULL, NULL);
 
 		zfs_vmobject_wlock(object);
 		for (i = 0; i < ncount; i++) {
@@ -4270,8 +4280,7 @@ zfs_putpages(struct vnode *vp, vm_page_t *ma, size_t len, int flags,
 
 out:
 	zfs_rangelock_exit(lr);
-	if ((flags & (zfs_vm_pagerput_sync | zfs_vm_pagerput_inval)) != 0 ||
-	    zfsvfs->z_os->os_sync == ZFS_SYNC_ALWAYS)
+	if (commit)
 		zil_commit(zfsvfs->z_log, zp->z_id);
 
 	dataset_kstats_update_write_kstats(&zfsvfs->z_kstat, len);
@@ -6213,6 +6222,7 @@ zfs_deallocate(struct vop_deallocate_args *ap)
 }
 #endif
 
+#if __FreeBSD_version >= 1300039
 #ifndef _SYS_SYSPROTO_H_
 struct vop_copy_file_range_args {
 	struct vnode *a_invp;
@@ -6235,12 +6245,18 @@ struct vop_copy_file_range_args {
 static int
 zfs_freebsd_copy_file_range(struct vop_copy_file_range_args *ap)
 {
+	zfsvfs_t *outzfsvfs;
 	struct vnode *invp = ap->a_invp;
 	struct vnode *outvp = ap->a_outvp;
 	struct mount *mp;
 	struct uio io;
 	int error;
 	uint64_t len = *ap->a_lenp;
+
+	if (!zfs_bclone_enabled) {
+		mp = NULL;
+		goto bad_write_fallback;
+	}
 
 	/*
 	 * TODO: If offset/length is not aligned to recordsize, use
@@ -6249,58 +6265,71 @@ zfs_freebsd_copy_file_range(struct vop_copy_file_range_args *ap)
 	 * need something else than vn_generic_copy_file_range().
 	 */
 
-	/* Lock both vnodes, avoiding risk of deadlock. */
-	do {
-		mp = NULL;
-		error = vn_start_write(outvp, &mp, V_WAIT);
-		if (error == 0) {
-			error = vn_lock(outvp, LK_EXCLUSIVE);
-			if (error == 0) {
-				if (invp == outvp)
-					break;
-				error = vn_lock(invp, LK_SHARED | LK_NOWAIT);
-				if (error == 0)
-					break;
-				VOP_UNLOCK(outvp);
-				if (mp != NULL)
-					vn_finished_write(mp);
-				mp = NULL;
-				error = vn_lock(invp, LK_SHARED);
-				if (error == 0)
-					VOP_UNLOCK(invp);
-			}
+	vn_start_write(outvp, &mp, V_WAIT);
+	if (__predict_true(mp == outvp->v_mount)) {
+		outzfsvfs = (zfsvfs_t *)mp->mnt_data;
+		if (!spa_feature_is_enabled(dmu_objset_spa(outzfsvfs->z_os),
+		    SPA_FEATURE_BLOCK_CLONING)) {
+			goto bad_write_fallback;
 		}
-		if (mp != NULL)
-			vn_finished_write(mp);
-	} while (error == 0);
-	if (error != 0)
-		return (error);
+	}
+	if (invp == outvp) {
+		if (vn_lock(outvp, LK_EXCLUSIVE) != 0) {
+			goto bad_write_fallback;
+		}
+	} else {
+#if (__FreeBSD_version >= 1302506 && __FreeBSD_version < 1400000) || \
+	__FreeBSD_version >= 1400086
+		vn_lock_pair(invp, false, LK_EXCLUSIVE, outvp, false,
+		    LK_EXCLUSIVE);
+#else
+		vn_lock_pair(invp, false, outvp, false);
+#endif
+		if (VN_IS_DOOMED(invp) || VN_IS_DOOMED(outvp)) {
+			goto bad_locked_fallback;
+		}
+	}
+
 #ifdef MAC
 	error = mac_vnode_check_write(curthread->td_ucred, ap->a_outcred,
 	    outvp);
 	if (error != 0)
-		goto unlock;
+		goto out_locked;
 #endif
 
 	io.uio_offset = *ap->a_outoffp;
 	io.uio_resid = *ap->a_lenp;
 	error = vn_rlimit_fsize(outvp, &io, ap->a_fsizetd);
 	if (error != 0)
-		goto unlock;
+		goto out_locked;
 
 	error = zfs_clone_range(VTOZ(invp), ap->a_inoffp, VTOZ(outvp),
-	    ap->a_outoffp, &len, ap->a_fsizetd->td_ucred);
+	    ap->a_outoffp, &len, ap->a_outcred);
+	if (error == EXDEV || error == EAGAIN || error == EINVAL ||
+	    error == EOPNOTSUPP)
+		goto bad_locked_fallback;
 	*ap->a_lenp = (size_t)len;
-
-unlock:
+out_locked:
 	if (invp != outvp)
 		VOP_UNLOCK(invp);
 	VOP_UNLOCK(outvp);
 	if (mp != NULL)
 		vn_finished_write(mp);
+	return (error);
 
+bad_locked_fallback:
+	if (invp != outvp)
+		VOP_UNLOCK(invp);
+	VOP_UNLOCK(outvp);
+bad_write_fallback:
+	if (mp != NULL)
+		vn_finished_write(mp);
+	error = vn_generic_copy_file_range(ap->a_invp, ap->a_inoffp,
+	    ap->a_outvp, ap->a_outoffp, ap->a_lenp, ap->a_flags,
+	    ap->a_incred, ap->a_outcred, ap->a_fsizetd);
 	return (error);
 }
+#endif
 
 struct vop_vector zfs_vnodeops;
 struct vop_vector zfs_fifoops;
@@ -6365,7 +6394,9 @@ struct vop_vector zfs_vnodeops = {
 #if __FreeBSD_version >= 1400043
 	.vop_add_writecount =	vop_stdadd_writecount_nomsync,
 #endif
+#if __FreeBSD_version >= 1300039
 	.vop_copy_file_range =	zfs_freebsd_copy_file_range,
+#endif
 };
 VFS_VOP_VECTOR_REGISTER(zfs_vnodeops);
 

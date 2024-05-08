@@ -99,6 +99,14 @@ dbuf_compare(const void *x1, const void *x2)
 	if (likely(cmp))
 		return (cmp);
 
+	if (d1->db_state == DB_MARKER) {
+		ASSERT3S(d2->db_state, !=, DB_MARKER);
+		return (TREE_PCMP(d1->db_parent, d2));
+	} else if (d2->db_state == DB_MARKER) {
+		ASSERT3S(d1->db_state, !=, DB_MARKER);
+		return (TREE_PCMP(d1, d2->db_parent));
+	}
+
 	if (d1->db_state == DB_SEARCH) {
 		ASSERT3S(d2->db_state, !=, DB_SEARCH);
 		return (-1);
@@ -720,6 +728,7 @@ dnode_allocate(dnode_t *dn, dmu_object_type_t ot, int blocksize, int ibs,
 	ASSERT(DMU_OT_IS_VALID(ot));
 	ASSERT((bonustype == DMU_OT_NONE && bonuslen == 0) ||
 	    (bonustype == DMU_OT_SA && bonuslen == 0) ||
+	    (bonustype == DMU_OTN_UINT64_METADATA && bonuslen == 0) ||
 	    (bonustype != DMU_OT_NONE && bonuslen != 0));
 	ASSERT(DMU_OT_IS_VALID(bonustype));
 	ASSERT3U(bonuslen, <=, DN_SLOTS_TO_BONUSLEN(dn_slots));
@@ -1236,9 +1245,11 @@ dnode_check_slots_free(dnode_children_t *children, int idx, int slots)
 	return (B_TRUE);
 }
 
-static void
+static uint_t
 dnode_reclaim_slots(dnode_children_t *children, int idx, int slots)
 {
+	uint_t reclaimed = 0;
+
 	ASSERT3S(idx + slots, <=, DNODES_PER_BLOCK);
 
 	for (int i = idx; i < idx + slots; i++) {
@@ -1250,8 +1261,11 @@ dnode_reclaim_slots(dnode_children_t *children, int idx, int slots)
 			ASSERT3S(dnh->dnh_dnode->dn_type, ==, DMU_OT_NONE);
 			dnode_destroy(dnh->dnh_dnode);
 			dnh->dnh_dnode = DN_SLOT_FREE;
+			reclaimed++;
 		}
 	}
+
+	return (reclaimed);
 }
 
 void
@@ -1564,6 +1578,8 @@ dnode_hold_impl(objset_t *os, uint64_t object, int flag, int slots,
 			} else {
 				dn = dnode_create(os, dn_block + idx, db,
 				    object, dnh);
+				dmu_buf_add_user_size(&db->db,
+				    sizeof (dnode_t));
 			}
 		}
 
@@ -1621,8 +1637,13 @@ dnode_hold_impl(objset_t *os, uint64_t object, int flag, int slots,
 		 * to be freed.  Single slot dnodes can be safely
 		 * re-purposed as a performance optimization.
 		 */
-		if (slots > 1)
-			dnode_reclaim_slots(dnc, idx + 1, slots - 1);
+		if (slots > 1) {
+			uint_t reclaimed =
+			    dnode_reclaim_slots(dnc, idx + 1, slots - 1);
+			if (reclaimed > 0)
+				dmu_buf_sub_user_size(&db->db,
+				    reclaimed * sizeof (dnode_t));
+		}
 
 		dnh = &dnc->dnc_children[idx];
 		if (DN_SLOT_IS_PTR(dnh->dnh_dnode)) {
@@ -1630,6 +1651,7 @@ dnode_hold_impl(objset_t *os, uint64_t object, int flag, int slots,
 		} else {
 			dn = dnode_create(os, dn_block + idx, db,
 			    object, dnh);
+			dmu_buf_add_user_size(&db->db, sizeof (dnode_t));
 		}
 
 		mutex_enter(&dn->dn_mtx);
@@ -1764,29 +1786,28 @@ dnode_try_claim(objset_t *os, uint64_t object, int slots)
 }
 
 /*
- * Checks if the dnode might contain any uncommitted changes to data blocks.
- * Dirty metadata (e.g. bonus buffer) does not count.
+ * Checks if the dnode itself is dirty, or is carrying any uncommitted records.
+ * It is important to check both conditions, as some operations (eg appending
+ * to a file) can dirty both as a single logical unit, but they are not synced
+ * out atomically, so checking one and not the other can result in an object
+ * appearing to be clean mid-way through a commit.
+ *
+ * Do not change this lightly! If you get it wrong, dmu_offset_next() can
+ * detect a hole where there is really data, leading to silent corruption.
  */
 boolean_t
 dnode_is_dirty(dnode_t *dn)
 {
 	mutex_enter(&dn->dn_mtx);
+
 	for (int i = 0; i < TXG_SIZE; i++) {
-		list_t *list = &dn->dn_dirty_records[i];
-		for (dbuf_dirty_record_t *dr = list_head(list);
-		    dr != NULL; dr = list_next(list, dr)) {
-			if (dr->dr_dbuf == NULL ||
-			    (dr->dr_dbuf->db_blkid != DMU_BONUS_BLKID &&
-			    dr->dr_dbuf->db_blkid != DMU_SPILL_BLKID)) {
-				mutex_exit(&dn->dn_mtx);
-				return (B_TRUE);
-			}
-		}
-		if (dn->dn_free_ranges[i] != NULL) {
+		if (multilist_link_active(&dn->dn_dirty_link[i]) ||
+		    !list_is_empty(&dn->dn_dirty_records[i])) {
 			mutex_exit(&dn->dn_mtx);
 			return (B_TRUE);
 		}
 	}
+
 	mutex_exit(&dn->dn_mtx);
 
 	return (B_FALSE);
@@ -1891,7 +1912,7 @@ dnode_set_blksz(dnode_t *dn, uint64_t size, int ibs, dmu_tx_t *tx)
 	if (ibs == dn->dn_indblkshift)
 		ibs = 0;
 
-	if (size >> SPA_MINBLOCKSHIFT == dn->dn_datablkszsec && ibs == 0)
+	if (size == dn->dn_datablksz && ibs == 0)
 		return (0);
 
 	rw_enter(&dn->dn_struct_rwlock, RW_WRITER);
@@ -1914,24 +1935,25 @@ dnode_set_blksz(dnode_t *dn, uint64_t size, int ibs, dmu_tx_t *tx)
 	if (ibs && dn->dn_nlevels != 1)
 		goto fail;
 
-	/* resize the old block */
-	err = dbuf_hold_impl(dn, 0, 0, TRUE, FALSE, FTAG, &db);
-	if (err == 0) {
-		dbuf_new_size(db, size, tx);
-	} else if (err != ENOENT) {
-		goto fail;
-	}
-
-	dnode_setdblksz(dn, size);
 	dnode_setdirty(dn, tx);
-	dn->dn_next_blksz[tx->tx_txg&TXG_MASK] = size;
+	if (size != dn->dn_datablksz) {
+		/* resize the old block */
+		err = dbuf_hold_impl(dn, 0, 0, TRUE, FALSE, FTAG, &db);
+		if (err == 0) {
+			dbuf_new_size(db, size, tx);
+		} else if (err != ENOENT) {
+			goto fail;
+		}
+
+		dnode_setdblksz(dn, size);
+		dn->dn_next_blksz[tx->tx_txg & TXG_MASK] = size;
+		if (db)
+			dbuf_rele(db, FTAG);
+	}
 	if (ibs) {
 		dn->dn_indblkshift = ibs;
-		dn->dn_next_indblkshift[tx->tx_txg&TXG_MASK] = ibs;
+		dn->dn_next_indblkshift[tx->tx_txg & TXG_MASK] = ibs;
 	}
-	/* release after we have fixed the blocksize in the dnode */
-	if (db)
-		dbuf_rele(db, FTAG);
 
 	rw_exit(&dn->dn_struct_rwlock);
 	return (0);
@@ -2535,7 +2557,7 @@ dnode_next_offset_level(dnode_t *dn, int flags, uint64_t *offset,
 	}
 
 	if (db != NULL && txg != 0 && (db->db_blkptr == NULL ||
-	    db->db_blkptr->blk_birth <= txg ||
+	    BP_GET_LOGICAL_BIRTH(db->db_blkptr) <= txg ||
 	    BP_IS_HOLE(db->db_blkptr))) {
 		/*
 		 * This can only happen when we are searching up the tree
@@ -2583,7 +2605,7 @@ dnode_next_offset_level(dnode_t *dn, int flags, uint64_t *offset,
 		    i >= 0 && i < epb; i += inc) {
 			if (BP_GET_FILL(&bp[i]) >= minfill &&
 			    BP_GET_FILL(&bp[i]) <= maxfill &&
-			    (hole || bp[i].blk_birth > txg))
+			    (hole || BP_GET_LOGICAL_BIRTH(&bp[i]) > txg))
 				break;
 			if (inc > 0 || *offset > 0)
 				*offset += inc;
@@ -2650,9 +2672,7 @@ dnode_next_offset(dnode_t *dn, int flags, uint64_t *offset,
 		rw_enter(&dn->dn_struct_rwlock, RW_READER);
 
 	if (dn->dn_phys->dn_nlevels == 0) {
-		if (!(flags & DNODE_FIND_HOLE)) {
-			error = SET_ERROR(ESRCH);
-		}
+		error = SET_ERROR(ESRCH);
 		goto out;
 	}
 

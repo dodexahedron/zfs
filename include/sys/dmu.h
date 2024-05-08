@@ -378,6 +378,7 @@ typedef struct dmu_buf {
 #define	DMU_POOL_DDT_STATS		"DDT-statistics"
 #define	DMU_POOL_CREATION_VERSION	"creation_version"
 #define	DMU_POOL_SCAN			"scan"
+#define	DMU_POOL_ERRORSCRUB		"error_scrub"
 #define	DMU_POOL_FREE_BPOBJ		"free_bpobj"
 #define	DMU_POOL_BPTREE_OBJ		"bptree_obj"
 #define	DMU_POOL_EMPTY_BPOBJ		"empty_bpobj"
@@ -571,11 +572,15 @@ int dmu_buf_hold(objset_t *os, uint64_t object, uint64_t offset,
 int dmu_buf_hold_array(objset_t *os, uint64_t object, uint64_t offset,
     uint64_t length, int read, const void *tag, int *numbufsp,
     dmu_buf_t ***dbpp);
+int dmu_buf_hold_noread(objset_t *os, uint64_t object, uint64_t offset,
+    const void *tag, dmu_buf_t **dbp);
 int dmu_buf_hold_by_dnode(dnode_t *dn, uint64_t offset,
     const void *tag, dmu_buf_t **dbp, int flags);
 int dmu_buf_hold_array_by_dnode(dnode_t *dn, uint64_t offset,
     uint64_t length, boolean_t read, const void *tag, int *numbufsp,
     dmu_buf_t ***dbpp, uint32_t flags);
+int dmu_buf_hold_noread_by_dnode(dnode_t *dn, uint64_t offset, const void *tag,
+    dmu_buf_t **dbp);
 /*
  * Add a reference to a dmu buffer that has already been held via
  * dmu_buf_hold() in the current context.
@@ -646,6 +651,9 @@ typedef struct dmu_buf_user {
 	 * Asynchronous user eviction callback state.
 	 */
 	taskq_ent_t	dbu_tqent;
+
+	/* Size of user data, for inclusion in dbuf_cache accounting. */
+	uint64_t	dbu_size;
 
 	/*
 	 * This instance's eviction function pointers.
@@ -729,13 +737,21 @@ void *dmu_buf_replace_user(dmu_buf_t *db,
 void *dmu_buf_remove_user(dmu_buf_t *db, dmu_buf_user_t *user);
 
 /*
+ * User data size accounting. This can be used to artifically inflate the size
+ * of the dbuf during cache accounting, so that dbuf_evict_thread evicts enough
+ * to satisfy memory reclaim requests. It's not used for anything else, and
+ * defaults to 0.
+ */
+uint64_t dmu_buf_user_size(dmu_buf_t *db);
+void dmu_buf_add_user_size(dmu_buf_t *db, uint64_t nadd);
+void dmu_buf_sub_user_size(dmu_buf_t *db, uint64_t nsub);
+
+/*
  * Returns the user data (dmu_buf_user_t *) associated with this dbuf.
  */
 void *dmu_buf_get_user(dmu_buf_t *db);
 
 objset_t *dmu_buf_get_objset(dmu_buf_t *db);
-dnode_t *dmu_buf_dnode_enter(dmu_buf_t *db);
-void dmu_buf_dnode_exit(dmu_buf_t *db);
 
 /* Block until any in-progress dmu buf user evictions complete. */
 void dmu_buf_user_evict_wait(void);
@@ -781,6 +797,9 @@ void dmu_buf_set_crypt_params(dmu_buf_t *db_fake, boolean_t byteorder,
 dmu_tx_t *dmu_tx_create(objset_t *os);
 void dmu_tx_hold_write(dmu_tx_t *tx, uint64_t object, uint64_t off, int len);
 void dmu_tx_hold_write_by_dnode(dmu_tx_t *tx, dnode_t *dn, uint64_t off,
+    int len);
+void dmu_tx_hold_append(dmu_tx_t *tx, uint64_t object, uint64_t off, int len);
+void dmu_tx_hold_append_by_dnode(dmu_tx_t *tx, dnode_t *dn, uint64_t off,
     int len);
 void dmu_tx_hold_clone_by_dnode(dmu_tx_t *tx, dnode_t *dn, uint64_t off,
     int len);
@@ -881,6 +900,9 @@ extern uint_t zfs_max_recordsize;
  */
 void dmu_prefetch(objset_t *os, uint64_t object, int64_t level, uint64_t offset,
 	uint64_t len, enum zio_priority pri);
+void dmu_prefetch_by_dnode(dnode_t *dn, int64_t level, uint64_t offset,
+	uint64_t len, enum zio_priority pri);
+void dmu_prefetch_dnode(objset_t *os, uint64_t object, enum zio_priority pri);
 
 typedef struct dmu_object_info {
 	/* All sizes are in bytes unless otherwise indicated. */
@@ -1062,10 +1084,9 @@ int dmu_offset_next(objset_t *os, uint64_t object, boolean_t hole,
     uint64_t *off);
 
 int dmu_read_l0_bps(objset_t *os, uint64_t object, uint64_t offset,
-    uint64_t length, dmu_tx_t *tx, struct blkptr *bps, size_t *nbpsp);
-void dmu_brt_clone(objset_t *os, uint64_t object, uint64_t offset,
-    uint64_t length, dmu_tx_t *tx, const struct blkptr *bps, size_t nbps,
-    boolean_t replay);
+    uint64_t length, struct blkptr *bps, size_t *nbpsp);
+int dmu_brt_clone(objset_t *os, uint64_t object, uint64_t offset,
+    uint64_t length, dmu_tx_t *tx, const struct blkptr *bps, size_t nbps);
 
 /*
  * Initial setup and final teardown.

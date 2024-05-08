@@ -68,7 +68,7 @@ AC_DEFUN([ZFS_AC_KERNEL_SRC_XATTR_HANDLER_GET], [
 	ZFS_LINUX_TEST_SRC([xattr_handler_get_dentry_inode], [
 		#include <linux/xattr.h>
 
-		int get(const struct xattr_handler *handler,
+		static int get(const struct xattr_handler *handler,
 		    struct dentry *dentry, struct inode *inode,
 		    const char *name, void *buffer, size_t size) { return 0; }
 		static const struct xattr_handler
@@ -80,7 +80,7 @@ AC_DEFUN([ZFS_AC_KERNEL_SRC_XATTR_HANDLER_GET], [
 	ZFS_LINUX_TEST_SRC([xattr_handler_get_xattr_handler], [
 		#include <linux/xattr.h>
 
-		int get(const struct xattr_handler *handler,
+		static int get(const struct xattr_handler *handler,
 		    struct dentry *dentry, const char *name,
 		    void *buffer, size_t size) { return 0; }
 		static const struct xattr_handler
@@ -92,7 +92,7 @@ AC_DEFUN([ZFS_AC_KERNEL_SRC_XATTR_HANDLER_GET], [
 	ZFS_LINUX_TEST_SRC([xattr_handler_get_dentry], [
 		#include <linux/xattr.h>
 
-		int get(struct dentry *dentry, const char *name,
+		static int get(struct dentry *dentry, const char *name,
 		    void *buffer, size_t size, int handler_flags)
 		    { return 0; }
 		static const struct xattr_handler
@@ -104,7 +104,7 @@ AC_DEFUN([ZFS_AC_KERNEL_SRC_XATTR_HANDLER_GET], [
 	ZFS_LINUX_TEST_SRC([xattr_handler_get_dentry_inode_flags], [
 		#include <linux/xattr.h>
 
-		int get(const struct xattr_handler *handler,
+		static int get(const struct xattr_handler *handler,
 		    struct dentry *dentry, struct inode *inode,
 		    const char *name, void *buffer,
 		    size_t size, int flags) { return 0; }
@@ -179,10 +179,25 @@ dnl #
 dnl # Supported xattr handler set() interfaces checked newest to oldest.
 dnl #
 AC_DEFUN([ZFS_AC_KERNEL_SRC_XATTR_HANDLER_SET], [
+	ZFS_LINUX_TEST_SRC([xattr_handler_set_mnt_idmap], [
+		#include <linux/xattr.h>
+
+		static int set(const struct xattr_handler *handler,
+			struct mnt_idmap *idmap,
+			struct dentry *dentry, struct inode *inode,
+			const char *name, const void *buffer,
+			size_t size, int flags)
+			{ return 0; }
+		static const struct xattr_handler
+			xops __attribute__ ((unused)) = {
+			.set = set,
+		};
+	],[])
+
 	ZFS_LINUX_TEST_SRC([xattr_handler_set_userns], [
 		#include <linux/xattr.h>
 
-		int set(const struct xattr_handler *handler,
+		static int set(const struct xattr_handler *handler,
 			struct user_namespace *mnt_userns,
 			struct dentry *dentry, struct inode *inode,
 			const char *name, const void *buffer,
@@ -197,7 +212,7 @@ AC_DEFUN([ZFS_AC_KERNEL_SRC_XATTR_HANDLER_SET], [
 	ZFS_LINUX_TEST_SRC([xattr_handler_set_dentry_inode], [
 		#include <linux/xattr.h>
 
-		int set(const struct xattr_handler *handler,
+		static int set(const struct xattr_handler *handler,
 		    struct dentry *dentry, struct inode *inode,
 		    const char *name, const void *buffer,
 		    size_t size, int flags)
@@ -211,7 +226,7 @@ AC_DEFUN([ZFS_AC_KERNEL_SRC_XATTR_HANDLER_SET], [
 	ZFS_LINUX_TEST_SRC([xattr_handler_set_xattr_handler], [
 		#include <linux/xattr.h>
 
-		int set(const struct xattr_handler *handler,
+		static int set(const struct xattr_handler *handler,
 		    struct dentry *dentry, const char *name,
 		    const void *buffer, size_t size, int flags)
 		    { return 0; }
@@ -224,7 +239,7 @@ AC_DEFUN([ZFS_AC_KERNEL_SRC_XATTR_HANDLER_SET], [
 	ZFS_LINUX_TEST_SRC([xattr_handler_set_dentry], [
 		#include <linux/xattr.h>
 
-		int set(struct dentry *dentry, const char *name,
+		static int set(struct dentry *dentry, const char *name,
 		    const void *buffer, size_t size, int flags,
 		    int handler_flags) { return 0; }
 		static const struct xattr_handler
@@ -240,53 +255,63 @@ AC_DEFUN([ZFS_AC_KERNEL_XATTR_HANDLER_SET], [
 	dnl # The xattr_handler->set() callback was changed to 8 arguments, and
 	dnl # struct user_namespace* was inserted as arg #2
 	dnl #
-	AC_MSG_CHECKING([whether xattr_handler->set() wants dentry, inode, and user_namespace])
-	ZFS_LINUX_TEST_RESULT([xattr_handler_set_userns], [
+	dnl # 6.3 API change,
+	dnl # The xattr_handler->set() callback 2nd arg is now struct mnt_idmap *
+	dnl #
+	AC_MSG_CHECKING([whether xattr_handler->set() wants dentry, inode, and mnt_idmap])
+	ZFS_LINUX_TEST_RESULT([xattr_handler_set_mnt_idmap], [
 		AC_MSG_RESULT(yes)
-		AC_DEFINE(HAVE_XATTR_SET_USERNS, 1,
-		    [xattr_handler->set() takes user_namespace])
-	],[
-		dnl #
-		dnl # 4.7 API change,
-		dnl # The xattr_handler->set() callback was changed to take both
-		dnl # dentry and inode.
-		dnl #
-		AC_MSG_RESULT(no)
-		AC_MSG_CHECKING([whether xattr_handler->set() wants dentry and inode])
-		ZFS_LINUX_TEST_RESULT([xattr_handler_set_dentry_inode], [
+		AC_DEFINE(HAVE_XATTR_SET_IDMAP, 1,
+		    [xattr_handler->set() takes mnt_idmap])
+	], [
+		AC_MSG_CHECKING([whether xattr_handler->set() wants dentry, inode, and user_namespace])
+		ZFS_LINUX_TEST_RESULT([xattr_handler_set_userns], [
 			AC_MSG_RESULT(yes)
-			AC_DEFINE(HAVE_XATTR_SET_DENTRY_INODE, 1,
-			    [xattr_handler->set() wants both dentry and inode])
+			AC_DEFINE(HAVE_XATTR_SET_USERNS, 1,
+			    [xattr_handler->set() takes user_namespace])
 		],[
 			dnl #
-			dnl # 4.4 API change,
-			dnl # The xattr_handler->set() callback was changed to take a
-			dnl # xattr_handler, and handler_flags argument was removed and
-			dnl # should be accessed by handler->flags.
+			dnl # 4.7 API change,
+			dnl # The xattr_handler->set() callback was changed to take both
+			dnl # dentry and inode.
 			dnl #
 			AC_MSG_RESULT(no)
-			AC_MSG_CHECKING(
-			    [whether xattr_handler->set() wants xattr_handler])
-			ZFS_LINUX_TEST_RESULT([xattr_handler_set_xattr_handler], [
+			AC_MSG_CHECKING([whether xattr_handler->set() wants dentry and inode])
+			ZFS_LINUX_TEST_RESULT([xattr_handler_set_dentry_inode], [
 				AC_MSG_RESULT(yes)
-				AC_DEFINE(HAVE_XATTR_SET_HANDLER, 1,
-				    [xattr_handler->set() wants xattr_handler])
+				AC_DEFINE(HAVE_XATTR_SET_DENTRY_INODE, 1,
+				    [xattr_handler->set() wants both dentry and inode])
 			],[
 				dnl #
-				dnl # 2.6.33 API change,
-				dnl # The xattr_handler->set() callback was changed
-				dnl # to take a dentry instead of an inode, and a
-				dnl # handler_flags argument was added.
+				dnl # 4.4 API change,
+				dnl # The xattr_handler->set() callback was changed to take a
+				dnl # xattr_handler, and handler_flags argument was removed and
+				dnl # should be accessed by handler->flags.
 				dnl #
 				AC_MSG_RESULT(no)
 				AC_MSG_CHECKING(
-				    [whether xattr_handler->set() wants dentry])
-				ZFS_LINUX_TEST_RESULT([xattr_handler_set_dentry], [
+				    [whether xattr_handler->set() wants xattr_handler])
+				ZFS_LINUX_TEST_RESULT([xattr_handler_set_xattr_handler], [
 					AC_MSG_RESULT(yes)
-					AC_DEFINE(HAVE_XATTR_SET_DENTRY, 1,
-					    [xattr_handler->set() wants dentry])
+					AC_DEFINE(HAVE_XATTR_SET_HANDLER, 1,
+					    [xattr_handler->set() wants xattr_handler])
 				],[
-					ZFS_LINUX_TEST_ERROR([xattr set()])
+					dnl #
+					dnl # 2.6.33 API change,
+					dnl # The xattr_handler->set() callback was changed
+					dnl # to take a dentry instead of an inode, and a
+					dnl # handler_flags argument was added.
+					dnl #
+					AC_MSG_RESULT(no)
+					AC_MSG_CHECKING(
+					    [whether xattr_handler->set() wants dentry])
+					ZFS_LINUX_TEST_RESULT([xattr_handler_set_dentry], [
+						AC_MSG_RESULT(yes)
+						AC_DEFINE(HAVE_XATTR_SET_DENTRY, 1,
+						    [xattr_handler->set() wants dentry])
+					],[
+						ZFS_LINUX_TEST_ERROR([xattr set()])
+					])
 				])
 			])
 		])
@@ -300,7 +325,7 @@ AC_DEFUN([ZFS_AC_KERNEL_SRC_XATTR_HANDLER_LIST], [
 	ZFS_LINUX_TEST_SRC([xattr_handler_list_simple], [
 		#include <linux/xattr.h>
 
-		bool list(struct dentry *dentry) { return 0; }
+		static bool list(struct dentry *dentry) { return 0; }
 		static const struct xattr_handler
 		    xops __attribute__ ((unused)) = {
 			.list = list,
@@ -310,7 +335,7 @@ AC_DEFUN([ZFS_AC_KERNEL_SRC_XATTR_HANDLER_LIST], [
 	ZFS_LINUX_TEST_SRC([xattr_handler_list_xattr_handler], [
 		#include <linux/xattr.h>
 
-		size_t list(const struct xattr_handler *handler,
+		static size_t list(const struct xattr_handler *handler,
 		    struct dentry *dentry, char *list, size_t list_size,
 		    const char *name, size_t name_len) { return 0; }
 		static const struct xattr_handler
@@ -322,7 +347,7 @@ AC_DEFUN([ZFS_AC_KERNEL_SRC_XATTR_HANDLER_LIST], [
 	ZFS_LINUX_TEST_SRC([xattr_handler_list_dentry], [
 		#include <linux/xattr.h>
 
-		size_t list(struct dentry *dentry,
+		static size_t list(struct dentry *dentry,
 		    char *list, size_t list_size,
 		    const char *name, size_t name_len,
 		    int handler_flags) { return 0; }

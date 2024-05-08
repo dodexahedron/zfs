@@ -37,6 +37,12 @@
 . ${STF_SUITE}/include/math.shlib
 . ${STF_SUITE}/include/blkdev.shlib
 
+# On AlmaLinux 9 we will see $PWD = '.' instead of the full path.  This causes
+# some tests to fail.  Fix it up here.
+if [ "$PWD" = "." ] ; then
+	PWD="$(readlink -f $PWD)"
+fi
+
 #
 # Apply constrained path when available.  This is required since the
 # PATH may have been modified by sudo's secure_path behavior.
@@ -55,13 +61,8 @@ function compare_version_gte
 	[ "$(printf "$1\n$2" | sort -V | tail -n1)" = "$1" ]
 }
 
-# Linux kernel version comparison function
-#
-# $1 Linux version ("4.10", "2.6.32") or blank for installed Linux version
-#
-# Used for comparison: if [ $(linux_version) -ge $(linux_version "2.6.32") ]
-#
-function linux_version
+# Helper function used by linux_version() and freebsd_version()
+function kernel_version
 {
 	typeset ver="$1"
 
@@ -75,6 +76,24 @@ function linux_version
 	[ -z "$minor" ] && minor=0
 
 	echo $((version * 100000 + major * 1000 + minor))
+}
+
+# Linux kernel version comparison function
+#
+# $1 Linux version ("4.10", "2.6.32") or blank for installed Linux version
+#
+# Used for comparison: if [ $(linux_version) -ge $(linux_version "2.6.32") ]
+function linux_version {
+	kernel_version "$1"
+}
+
+# FreeBSD version comparison function
+#
+# $1 FreeBSD version ("13.2", "14.0") or blank for installed FreeBSD version
+#
+# Used for comparison: if [ $(freebsd_version) -ge $(freebsd_version "13.2") ]
+function freebsd_version {
+	kernel_version "$1"
 }
 
 # Determine if this is a Linux test system
@@ -1951,6 +1970,7 @@ function check_pool_status # pool token keyword <verbose>
 #	is_pool_removing - to check if the pool removing is a vdev
 #	is_pool_removed - to check if the pool remove is completed
 #	is_pool_discarding - to check if the pool checkpoint is being discarded
+#	is_pool_replacing - to check if the pool is performing a replacement
 #
 function is_pool_resilvering #pool <verbose>
 {
@@ -1968,6 +1988,12 @@ function is_pool_scrubbing #pool <verbose>
 	check_pool_status "$1" "scan" "scrub in progress since " $2
 }
 
+function is_pool_error_scrubbing #pool <verbose>
+{
+	check_pool_status "$1" "scrub" "error scrub in progress since " $2
+	return $?
+}
+
 function is_pool_scrubbed #pool <verbose>
 {
 	check_pool_status "$1" "scan" "scrub repaired" $2
@@ -1978,9 +2004,21 @@ function is_pool_scrub_stopped #pool <verbose>
 	check_pool_status "$1" "scan" "scrub canceled" $2
 }
 
+function is_pool_error_scrub_stopped #pool <verbose>
+{
+	check_pool_status "$1" "scrub" "error scrub canceled on " $2
+	return $?
+}
+
 function is_pool_scrub_paused #pool <verbose>
 {
 	check_pool_status "$1" "scan" "scrub paused since " $2
+}
+
+function is_pool_error_scrub_paused #pool <verbose>
+{
+	check_pool_status "$1" "scrub" "error scrub paused since " $2
+	return $?
 }
 
 function is_pool_removing #pool
@@ -1996,6 +2034,10 @@ function is_pool_removed #pool
 function is_pool_discarding #pool
 {
 	check_pool_status "$1" "checkpoint" "discarding"
+}
+function is_pool_replacing #pool
+{
+	zpool status "$1" | grep -qE 'replacing-[0-9]+'
 }
 
 function wait_for_degraded
@@ -2983,12 +3025,15 @@ function wait_freeing #pool
 # Wait for every device replace operation to complete
 #
 # $1 pool name
+# $2 timeout
 #
-function wait_replacing #pool
+function wait_replacing #pool timeout
 {
+	typeset timeout=${2:-300}
 	typeset pool=${1:-$TESTPOOL}
-	while zpool status $pool | grep -qE 'replacing-[0-9]+'; do
-		log_must sleep 1
+	for (( timer = 0; timer < $timeout; timer++ )); do
+		is_pool_replacing $pool || break;
+		sleep 1;
 	done
 }
 
@@ -3306,6 +3351,21 @@ function set_tunable_impl
 		echo "${tunable}/${mdb_cmd}0t${value}" | mdb -kw
 		;;
 	esac
+}
+
+function save_tunable
+{
+	[[ ! -d $TEST_BASE_DIR ]] && return 1
+	[[ -e $TEST_BASE_DIR/tunable-$1 ]] && return 2
+	echo "$(get_tunable """$1""")" > "$TEST_BASE_DIR"/tunable-"$1"
+}
+
+function restore_tunable
+{
+	[[ ! -e $TEST_BASE_DIR/tunable-$1 ]] && return 1
+	val="$(cat $TEST_BASE_DIR/tunable-"""$1""")"
+	set_tunable64 "$1" "$val"
+	rm $TEST_BASE_DIR/tunable-$1
 }
 
 #
@@ -3680,7 +3740,7 @@ function arcstat_quiescence # stat echo
 
 	while $do_once || [ $stat1 -ne $stat2 ] || [ $stat2 -eq 0 ]; do
 		typeset stat1=$(get_arcstat $stat)
-		sleep 2
+		sleep 0.5
 		typeset stat2=$(get_arcstat $stat)
 		do_once=false
 	done

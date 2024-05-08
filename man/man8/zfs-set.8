@@ -29,7 +29,7 @@
 .\" Copyright 2018 Nexenta Systems, Inc.
 .\" Copyright 2019 Joyent, Inc.
 .\"
-.Dd March 16, 2022
+.Dd April 20, 2024
 .Dt ZFS-SET 8
 .Os
 .
@@ -39,6 +39,7 @@
 .Sh SYNOPSIS
 .Nm zfs
 .Cm set
+.Op Fl u
 .Ar property Ns = Ns Ar value Oo Ar property Ns = Ns Ar value Oc Ns …
 .Ar filesystem Ns | Ns Ar volume Ns | Ns Ar snapshot Ns …
 .Nm zfs
@@ -60,6 +61,7 @@
 .It Xo
 .Nm zfs
 .Cm set
+.Op Fl u
 .Ar property Ns = Ns Ar value Oo Ar property Ns = Ns Ar value Oc Ns …
 .Ar filesystem Ns | Ns Ar volume Ns | Ns Ar snapshot Ns …
 .Xc
@@ -79,6 +81,11 @@ For more information, see the
 .Em User Properties
 section of
 .Xr zfsprops 7 .
+.Bl -tag -width "-u"
+.It Fl u
+Update mountpoint, sharenfs, sharesmb property but do not mount or share the
+dataset.
+.El
 .It Xo
 .Nm zfs
 .Cm get
@@ -151,6 +158,15 @@ A comma-separated list of types to display, where
 .Ar type
 is one of
 .Sy filesystem , snapshot , volume , bookmark , No or Sy all .
+.Sy fs ,
+.Sy snap ,
+or
+.Sy vol
+can be used as aliases for
+.Sy filesystem ,
+.Sy snapshot ,
+or
+.Sy volume .
 .El
 .It Xo
 .Nm zfs

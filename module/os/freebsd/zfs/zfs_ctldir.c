@@ -204,6 +204,10 @@ sfs_vgetx(struct mount *mp, int flags, uint64_t parent_id, uint64_t id,
 		return (error);
 	}
 
+#if __FreeBSD_version >= 1400077
+	vn_set_state(vp, VSTATE_CONSTRUCTED);
+#endif
+
 	*vpp = vp;
 	return (0);
 }
@@ -675,6 +679,17 @@ zfsctl_root_readdir(struct vop_readdir_args *ap)
 
 	ASSERT3S(vp->v_type, ==, VDIR);
 
+	/*
+	 * FIXME: this routine only ever emits 3 entries and does not tolerate
+	 * being called with a buffer too small to handle all of them.
+	 *
+	 * The check below facilitates the idiom of repeating calls until the
+	 * count to return is 0.
+	 */
+	if (zfs_uio_offset(&uio) == 3 * sizeof (entry)) {
+		return (0);
+	}
+
 	error = sfs_readdir_common(zfsvfs->z_root, ZFSCTL_INO_ROOT, ap, &uio,
 	    &dots_offset);
 	if (error != 0) {
@@ -801,6 +816,9 @@ static struct vop_vector zfsctl_ops_root = {
 	.vop_default =	&default_vnodeops,
 #if __FreeBSD_version >= 1300121
 	.vop_fplookup_vexec = VOP_EAGAIN,
+#endif
+#if __FreeBSD_version >= 1300139
+	.vop_fplookup_symlink = VOP_EAGAIN,
 #endif
 	.vop_open =	zfsctl_common_open,
 	.vop_close =	zfsctl_common_close,
@@ -1008,7 +1026,8 @@ zfsctl_snapdir_lookup(struct vop_lookup_args *ap)
 	    "%s/" ZFS_CTLDIR_NAME "/snapshot/%s",
 	    dvp->v_vfsp->mnt_stat.f_mntonname, name);
 
-	err = mount_snapshot(curthread, vpp, "zfs", mountpoint, fullname, 0);
+	err = mount_snapshot(curthread, vpp, "zfs", mountpoint, fullname, 0,
+	    dvp->v_vfsp);
 	kmem_free(mountpoint, mountpoint_len);
 	if (err == 0) {
 		/*
@@ -1130,6 +1149,9 @@ static struct vop_vector zfsctl_ops_snapdir = {
 #if __FreeBSD_version >= 1300121
 	.vop_fplookup_vexec = VOP_EAGAIN,
 #endif
+#if __FreeBSD_version >= 1300139
+	.vop_fplookup_symlink = VOP_EAGAIN,
+#endif
 	.vop_open =	zfsctl_common_open,
 	.vop_close =	zfsctl_common_close,
 	.vop_getattr =	zfsctl_snapdir_getattr,
@@ -1236,6 +1258,9 @@ static struct vop_vector zfsctl_ops_snapshot = {
 	.vop_default =		NULL, /* ensure very restricted access */
 #if __FreeBSD_version >= 1300121
 	.vop_fplookup_vexec =	VOP_EAGAIN,
+#endif
+#if __FreeBSD_version >= 1300139
+	.vop_fplookup_symlink = VOP_EAGAIN,
 #endif
 	.vop_open =		zfsctl_common_open,
 	.vop_close =		zfsctl_common_close,

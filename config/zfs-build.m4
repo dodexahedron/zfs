@@ -358,6 +358,9 @@ AC_DEFUN([ZFS_AC_RPM], [
 	AS_IF([test -n "$udevruledir" ], [
 		RPM_DEFINE_UTIL=${RPM_DEFINE_UTIL}' --define "_udevruledir $(udevruledir)"'
 	])
+	AS_IF([test -n "$bashcompletiondir" ], [
+		RPM_DEFINE_UTIL=${RPM_DEFINE_UTIL}' --define "_bashcompletiondir $(bashcompletiondir)"'
+	])
 	RPM_DEFINE_UTIL=${RPM_DEFINE_UTIL}' $(DEFINE_SYSTEMD)'
 	RPM_DEFINE_UTIL=${RPM_DEFINE_UTIL}' $(DEFINE_PYZFS)'
 	RPM_DEFINE_UTIL=${RPM_DEFINE_UTIL}' $(DEFINE_PAM)'
@@ -575,13 +578,15 @@ AC_DEFUN([ZFS_AC_DEFAULT_PACKAGE], [
 
 	AC_MSG_CHECKING([default shell])
 	case "$VENDOR" in
-		gentoo)     DEFAULT_INIT_SHELL="/sbin/openrc-run";;
-		alpine)     DEFAULT_INIT_SHELL="/sbin/openrc-run";;
-		*)          DEFAULT_INIT_SHELL="/bin/sh"         ;;
+		gentoo|alpine)	DEFAULT_INIT_SHELL=/sbin/openrc-run
+				IS_SYSV_RC=false	;;
+		*)		DEFAULT_INIT_SHELL=/bin/sh
+				IS_SYSV_RC=true		;;
 	esac
 
 	AC_MSG_RESULT([$DEFAULT_INIT_SHELL])
 	AC_SUBST(DEFAULT_INIT_SHELL)
+	AC_SUBST(IS_SYSV_RC)
 
 	AC_MSG_CHECKING([default nfs server init script])
 	AS_IF([test "$VENDOR" = "debian"],
@@ -617,6 +622,18 @@ AC_DEFUN([ZFS_AC_DEFAULT_PACKAGE], [
 		AC_MSG_RESULT([no])
 	fi
 	AC_SUBST(RPM_DEFINE_INITRAMFS)
+
+	AC_MSG_CHECKING([default bash completion directory])
+	case "$VENDOR" in
+		ubuntu)     bashcompletiondir=/usr/share/bash-completion/completions   ;;
+		debian)     bashcompletiondir=/usr/share/bash-completion/completions   ;;
+		freebsd)    bashcompletiondir=$sysconfdir/bash_completion.d;;
+		gentoo)     bashcompletiondir=/usr/share/bash-completion/completions   ;;
+		*)          bashcompletiondir=/etc/bash_completion.d   ;;
+	esac
+	AC_MSG_RESULT([$bashcompletiondir])
+	AC_SUBST(bashcompletiondir)
+
 ])
 
 dnl #

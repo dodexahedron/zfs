@@ -61,22 +61,25 @@ extern "C" {
 /*
  * The simplified state transition diagram for dbufs looks like:
  *
- *		+----> READ ----+
- *		|		|
- *		|		V
- *  (alloc)-->UNCACHED	     CACHED-->EVICTING-->(free)
- *		|		^	 ^
- *		|		|	 |
- *		+----> FILL ----+	 |
- *		|			 |
- *		|			 |
- *		+--------> NOFILL -------+
+ *                  +--> READ --+
+ *                  |           |
+ *                  |           V
+ *  (alloc)-->UNCACHED       CACHED-->EVICTING-->(free)
+ *             ^    |           ^        ^
+ *             |    |           |        |
+ *             |    +--> FILL --+        |
+ *             |    |                    |
+ *             |    |                    |
+ *             |    +------> NOFILL -----+
+ *             |               |
+ *             +---------------+
  *
  * DB_SEARCH is an invalid state for a dbuf. It is used by dbuf_free_range
  * to find all dbufs in a range of a dnode and must be less than any other
  * dbuf_states_t (see comment on dn_dbufs in dnode.h).
  */
 typedef enum dbuf_states {
+	DB_MARKER = -2,
 	DB_SEARCH = -1,
 	DB_UNCACHED,
 	DB_FILL,
@@ -375,9 +378,10 @@ dmu_buf_impl_t *dbuf_find(struct objset *os, uint64_t object, uint8_t level,
     uint64_t blkid, uint64_t *hash_out);
 
 int dbuf_read(dmu_buf_impl_t *db, zio_t *zio, uint32_t flags);
+void dmu_buf_will_clone(dmu_buf_t *db, dmu_tx_t *tx);
 void dmu_buf_will_not_fill(dmu_buf_t *db, dmu_tx_t *tx);
-void dmu_buf_will_fill(dmu_buf_t *db, dmu_tx_t *tx);
-void dmu_buf_fill_done(dmu_buf_t *db, dmu_tx_t *tx);
+void dmu_buf_will_fill(dmu_buf_t *db, dmu_tx_t *tx, boolean_t canfail);
+boolean_t dmu_buf_fill_done(dmu_buf_t *db, dmu_tx_t *tx, boolean_t failed);
 void dbuf_assign_arcbuf(dmu_buf_impl_t *db, arc_buf_t *buf, dmu_tx_t *tx);
 dbuf_dirty_record_t *dbuf_dirty(dmu_buf_impl_t *db, dmu_tx_t *tx);
 dbuf_dirty_record_t *dbuf_dirty_lightweight(dnode_t *dn, uint64_t blkid,

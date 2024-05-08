@@ -20,7 +20,7 @@
  */
 /*
  * Copyright (c) 2005, 2010, Oracle and/or its affiliates. All rights reserved.
- * Copyright (c) 2012, 2020 by Delphix. All rights reserved.
+ * Copyright (c) 2012, 2024 by Delphix. All rights reserved.
  * Copyright 2016 RackTop Systems.
  * Copyright (c) 2017, Intel Corporation.
  */
@@ -454,6 +454,8 @@ typedef enum zinject_type {
 	ZINJECT_PANIC,
 	ZINJECT_DELAY_IO,
 	ZINJECT_DECRYPT_FAULT,
+	ZINJECT_DELAY_IMPORT,
+	ZINJECT_DELAY_EXPORT,
 } zinject_type_t;
 
 typedef struct zfs_share {
@@ -575,7 +577,6 @@ typedef struct zfsdev_state {
 extern void *zfsdev_get_state(minor_t minor, enum zfsdev_state_type which);
 extern int zfsdev_getminor(zfs_file_t *fp, minor_t *minorp);
 
-extern uint_t zfs_fsyncer_key;
 extern uint_t zfs_allow_log_key;
 
 #endif	/* _KERNEL */

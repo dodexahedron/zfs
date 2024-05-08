@@ -228,9 +228,9 @@ typedef pthread_t	kthread_t;
 
 #define	thread_create_named(name, stk, stksize, func, arg, len, \
     pp, state, pri)	\
-	zk_thread_create(func, arg, stksize, state)
+	zk_thread_create(name, func, arg, stksize, state)
 #define	thread_create(stk, stksize, func, arg, len, pp, state, pri)	\
-	zk_thread_create(func, arg, stksize, state)
+	zk_thread_create(#func, func, arg, stksize, state)
 #define	thread_exit()	pthread_exit(NULL)
 #define	thread_join(t)	pthread_join((pthread_t)(t), NULL)
 
@@ -246,8 +246,8 @@ extern struct proc p0;
 
 #define	PS_NONE		-1
 
-extern kthread_t *zk_thread_create(void (*func)(void *), void *arg,
-    size_t stksize, int state);
+extern kthread_t *zk_thread_create(const char *name, void (*func)(void *),
+    void *arg, size_t stksize, int state);
 
 #define	issig(why)	(FALSE)
 #define	ISSIG(thr, why)	(FALSE)
@@ -274,11 +274,13 @@ typedef struct kmutex {
 extern void mutex_init(kmutex_t *mp, char *name, int type, void *cookie);
 extern void mutex_destroy(kmutex_t *mp);
 extern void mutex_enter(kmutex_t *mp);
+extern int mutex_enter_check_return(kmutex_t *mp);
 extern void mutex_exit(kmutex_t *mp);
 extern int mutex_tryenter(kmutex_t *mp);
 
 #define	NESTED_SINGLE 1
 #define	mutex_enter_nested(mp, class) mutex_enter(mp)
+#define	mutex_enter_interruptible(mp) mutex_enter_check_return(mp)
 /*
  * RW locks
  */
@@ -494,6 +496,8 @@ extern taskq_t *system_taskq;
 extern taskq_t *system_delay_taskq;
 
 extern taskq_t	*taskq_create(const char *, int, pri_t, int, int, uint_t);
+extern taskq_t	*taskq_create_synced(const char *, int, pri_t, int, int, uint_t,
+    kthread_t ***);
 #define	taskq_create_proc(a, b, c, d, e, p, f) \
 	    (taskq_create(a, b, c, d, e, f))
 #define	taskq_create_sysdc(a, b, d, e, p, dc, f) \
@@ -695,8 +699,10 @@ extern char *kmem_asprintf(const char *fmt, ...);
 #define	kmem_strfree(str) kmem_free((str), strlen(str) + 1)
 #define	kmem_strdup(s)  strdup(s)
 
+#ifndef __cplusplus
 extern int kmem_scnprintf(char *restrict str, size_t size,
     const char *restrict fmt, ...);
+#endif
 
 /*
  * Hostname information

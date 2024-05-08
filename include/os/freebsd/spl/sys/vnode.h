@@ -36,7 +36,11 @@ struct xucred;
 typedef struct flock	flock64_t;
 typedef	struct vnode	vnode_t;
 typedef	struct vattr	vattr_t;
+#if __FreeBSD_version < 1400093
 typedef enum vtype vtype_t;
+#else
+#define	vtype_t __enum_uint8(vtype)
+#endif
 
 #include <sys/types.h>
 #include <sys/queue.h>
@@ -52,6 +56,7 @@ enum symfollow { NO_FOLLOW = NOFOLLOW };
 #ifndef IN_BASE
 #include_next <sys/vnode.h>
 #endif
+#include <sys/ccompat.h>
 #include <sys/mount.h>
 #include <sys/cred.h>
 #include <sys/fcntl.h>
@@ -100,7 +105,7 @@ vn_flush_cached_data(vnode_t *vp, boolean_t sync)
 		zfs_vmobject_wlock(vp->v_object);
 		vm_object_page_clean(vp->v_object, 0, 0, flags);
 		zfs_vmobject_wunlock(vp->v_object);
-		VOP_UNLOCK(vp);
+		VOP_UNLOCK1(vp);
 	}
 }
 #endif

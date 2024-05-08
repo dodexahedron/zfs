@@ -37,6 +37,7 @@
 #include <curl/curl.h>
 #endif
 #include <libzfs.h>
+#include <libzutil.h>
 #include "libzfs_impl.h"
 #include "zfeature_common.h"
 
@@ -493,7 +494,7 @@ get_key_material_file(libzfs_handle_t *hdl, const char *uri,
 		ret = errno;
 		errno = 0;
 		zfs_error_aux(hdl, dgettext(TEXT_DOMAIN,
-		    "Failed to open key material file: %s"), strerror(ret));
+		    "Failed to open key material file: %s"), zfs_strerror(ret));
 		return (ret);
 	}
 
@@ -595,7 +596,7 @@ get_key_material_https(libzfs_handle_t *hdl, const char *uri,
 	    "%s/libzfs-XXXXXXXX.https", getenv("TMPDIR") ?: "/tmp") == -1) {
 		ret = ENOMEM;
 		zfs_error_aux(hdl, dgettext(TEXT_DOMAIN, "%s"),
-		    strerror(ret));
+		    zfs_strerror(ret));
 		goto end;
 	}
 
@@ -604,7 +605,7 @@ get_key_material_https(libzfs_handle_t *hdl, const char *uri,
 		ret = errno;
 		zfs_error_aux(hdl, dgettext(TEXT_DOMAIN,
 		    "Couldn't create temporary file %s: %s"),
-		    path, strerror(ret));
+		    path, zfs_strerror(ret));
 		free(path);
 		goto end;
 	}
@@ -616,7 +617,7 @@ kfdok:
 		ret = errno;
 		(void) close(kfd);
 		zfs_error_aux(hdl, dgettext(TEXT_DOMAIN,
-		    "Couldn't reopen temporary file: %s"), strerror(ret));
+		    "Couldn't reopen temporary file: %s"), zfs_strerror(ret));
 		goto end;
 	}
 
@@ -1226,7 +1227,7 @@ load_keys_cb(zfs_handle_t *zhp, void *arg)
 		cb->cb_numfailed++;
 
 out:
-	(void) zfs_iter_filesystems(zhp, 0, load_keys_cb, cb);
+	(void) zfs_iter_filesystems_v2(zhp, 0, load_keys_cb, cb);
 	zfs_close(zhp);
 
 	/* always return 0, since this function is best effort */

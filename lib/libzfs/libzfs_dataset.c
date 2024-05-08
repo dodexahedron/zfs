@@ -67,6 +67,10 @@
 #include "libzfs_impl.h"
 #include "zfs_deleg.h"
 
+static __thread struct passwd gpwd;
+static __thread struct group ggrp;
+static __thread char rpbuf[2048];
+
 static int userquota_propname_decode(const char *propname, boolean_t zoned,
     zfs_userquota_prop_t *typep, char *domain, int domainlen, uint64_t *ridp);
 
@@ -757,7 +761,7 @@ zfs_open(libzfs_handle_t *hdl, const char *path, int types)
 		 * Iterate bookmarks to find the right one.
 		 */
 		errno = 0;
-		if ((zfs_iter_bookmarks(pzhp, 0, zfs_open_bookmarks_cb,
+		if ((zfs_iter_bookmarks_v2(pzhp, 0, zfs_open_bookmarks_cb,
 		    &cb_data) == 0) && (cb_data.zhp == NULL)) {
 			(void) zfs_error(hdl, EZFS_NOENT, errbuf);
 			zfs_close(pzhp);
@@ -1034,6 +1038,7 @@ zfs_valid_proplist(libzfs_handle_t *hdl, zfs_type_t type, nvlist_t *nvl,
 	nvlist_t *ret;
 	int chosen_normal = -1;
 	int chosen_utf = -1;
+	int set_maxbs = 0;
 
 	if (nvlist_alloc(&ret, NV_UNIQUE_NAME, 0) != 0) {
 		(void) no_memory(hdl);
@@ -1252,12 +1257,17 @@ zfs_valid_proplist(libzfs_handle_t *hdl, zfs_type_t type, nvlist_t *nvl,
 				(void) zfs_error(hdl, EZFS_BADPROP, errbuf);
 				goto error;
 			}
+			/* save the ZFS_PROP_RECORDSIZE during create op */
+			if (zpool_hdl == NULL && prop == ZFS_PROP_RECORDSIZE) {
+				set_maxbs = intval;
+			}
 			break;
 		}
 
 		case ZFS_PROP_SPECIAL_SMALL_BLOCKS:
 		{
-			int maxbs = SPA_OLD_MAXBLOCKSIZE;
+			int maxbs =
+			    set_maxbs == 0 ? SPA_OLD_MAXBLOCKSIZE : set_maxbs;
 			char buf[64];
 
 			if (zpool_hdl != NULL) {
@@ -1765,14 +1775,24 @@ error:
 	return (ret);
 }
 
-
-
 /*
  * Given an nvlist of property names and values, set the properties for the
  * given dataset.
  */
 int
 zfs_prop_set_list(zfs_handle_t *zhp, nvlist_t *props)
+{
+	return (zfs_prop_set_list_flags(zhp, props, 0));
+}
+
+/*
+ * Given an nvlist of property names, values and flags, set the properties
+ * for the given dataset. If ZFS_SET_NOMOUNT is set, it allows to update
+ * mountpoint, sharenfs and sharesmb properties without (un/re)mounting
+ * and (un/re)sharing the dataset.
+ */
+int
+zfs_prop_set_list_flags(zfs_handle_t *zhp, nvlist_t *props, int flags)
 {
 	zfs_cmd_t zc = {"\0"};
 	int ret = -1;
@@ -1783,7 +1803,8 @@ zfs_prop_set_list(zfs_handle_t *zhp, nvlist_t *props)
 	nvlist_t *nvl;
 	int nvl_len = 0;
 	int added_resv = 0;
-	zfs_prop_t prop = 0;
+	zfs_prop_t prop;
+	boolean_t nsprop = B_FALSE;
 	nvpair_t *elem;
 
 	(void) snprintf(errbuf, sizeof (errbuf),
@@ -1830,6 +1851,7 @@ zfs_prop_set_list(zfs_handle_t *zhp, nvlist_t *props)
 	    elem = nvlist_next_nvpair(nvl, elem)) {
 
 		prop = zfs_name_to_prop(nvpair_name(elem));
+		nsprop |= zfs_is_namespace_prop(prop);
 
 		assert(cl_idx < nvl_len);
 		/*
@@ -1840,7 +1862,9 @@ zfs_prop_set_list(zfs_handle_t *zhp, nvlist_t *props)
 		if (prop != ZFS_PROP_CANMOUNT ||
 		    (fnvpair_value_uint64(elem) == ZFS_CANMOUNT_OFF &&
 		    zfs_is_mounted(zhp, NULL))) {
-			cls[cl_idx] = changelist_gather(zhp, prop, 0, 0);
+			cls[cl_idx] = changelist_gather(zhp, prop,
+			    ((flags & ZFS_SET_NOMOUNT) ?
+			    CL_GATHER_DONT_UNMOUNT : 0), 0);
 			if (cls[cl_idx] == NULL)
 				goto error;
 		}
@@ -1928,8 +1952,7 @@ zfs_prop_set_list(zfs_handle_t *zhp, nvlist_t *props)
 			 * if one of the options handled by the generic
 			 * Linux namespace layer has been modified.
 			 */
-			if (zfs_is_namespace_prop(prop) &&
-			    zfs_is_mounted(zhp, NULL))
+			if (nsprop && zfs_is_mounted(zhp, NULL))
 				ret = zfs_mount(zhp, MNTOPT_REMOUNT, 0);
 		}
 	}
@@ -2476,7 +2499,7 @@ get_clones_cb(zfs_handle_t *zhp, void *arg)
 	}
 
 out:
-	(void) zfs_iter_children(zhp, 0, get_clones_cb, gca);
+	(void) zfs_iter_children_v2(zhp, 0, get_clones_cb, gca);
 	zfs_close(zhp);
 	return (0);
 }
@@ -3176,11 +3199,15 @@ userquota_propname_decode(const char *propname, boolean_t zoned,
 
 	cp = strchr(propname, '@') + 1;
 
-	if (isuser && (pw = getpwnam(cp)) != NULL) {
+	if (isuser &&
+	    getpwnam_r(cp, &gpwd, rpbuf, sizeof (rpbuf), &pw) == 0 &&
+	    pw != NULL) {
 		if (zoned && getzoneid() == GLOBAL_ZONEID)
 			return (ENOENT);
 		*ridp = pw->pw_uid;
-	} else if (isgroup && (gr = getgrnam(cp)) != NULL) {
+	} else if (isgroup &&
+	    getgrnam_r(cp, &ggrp, rpbuf, sizeof (rpbuf), &gr) == 0 &&
+	    gr != NULL) {
 		if (zoned && getzoneid() == GLOBAL_ZONEID)
 			return (ENOENT);
 		*ridp = gr->gr_gid;
@@ -3925,7 +3952,7 @@ zfs_check_snap_cb(zfs_handle_t *zhp, void *arg)
 	if (lzc_exists(name))
 		fnvlist_add_boolean(dd->nvl, name);
 
-	rv = zfs_iter_filesystems(zhp, 0, zfs_check_snap_cb, dd);
+	rv = zfs_iter_filesystems_v2(zhp, 0, zfs_check_snap_cb, dd);
 	zfs_close(zhp);
 	return (rv);
 }
@@ -4163,7 +4190,7 @@ zfs_snapshot_cb(zfs_handle_t *zhp, void *arg)
 
 		fnvlist_add_boolean(sd->sd_nvl, name);
 
-		rv = zfs_iter_filesystems(zhp, 0, zfs_snapshot_cb, sd);
+		rv = zfs_iter_filesystems_v2(zhp, 0, zfs_snapshot_cb, sd);
 	}
 	zfs_close(zhp);
 
@@ -4340,7 +4367,7 @@ rollback_destroy(zfs_handle_t *zhp, void *data)
 	rollback_data_t *cbp = data;
 
 	if (zfs_prop_get_int(zhp, ZFS_PROP_CREATETXG) > cbp->cb_create) {
-		cbp->cb_error |= zfs_iter_dependents(zhp, 0, B_FALSE,
+		cbp->cb_error |= zfs_iter_dependents_v2(zhp, 0, B_FALSE,
 		    rollback_destroy_dependent, cbp);
 
 		cbp->cb_error |= zfs_destroy(zhp, B_FALSE);
@@ -4380,10 +4407,10 @@ zfs_rollback(zfs_handle_t *zhp, zfs_handle_t *snap, boolean_t force)
 	if (cb.cb_create > 0)
 		min_txg = cb.cb_create;
 
-	(void) zfs_iter_snapshots(zhp, 0, rollback_destroy, &cb,
+	(void) zfs_iter_snapshots_v2(zhp, 0, rollback_destroy, &cb,
 	    min_txg, 0);
 
-	(void) zfs_iter_bookmarks(zhp, 0, rollback_destroy, &cb);
+	(void) zfs_iter_bookmarks_v2(zhp, 0, rollback_destroy, &cb);
 
 	if (cb.cb_error)
 		return (-1);
@@ -4964,7 +4991,7 @@ zfs_hold_one(zfs_handle_t *zhp, void *arg)
 		fnvlist_add_string(ha->nvl, name, ha->tag);
 
 	if (ha->recursive)
-		rv = zfs_iter_filesystems(zhp, 0, zfs_hold_one, ha);
+		rv = zfs_iter_filesystems_v2(zhp, 0, zfs_hold_one, ha);
 	zfs_close(zhp);
 	return (rv);
 }
@@ -5095,7 +5122,7 @@ zfs_release_one(zfs_handle_t *zhp, void *arg)
 	}
 
 	if (ha->recursive)
-		rv = zfs_iter_filesystems(zhp, 0, zfs_release_one, ha);
+		rv = zfs_iter_filesystems_v2(zhp, 0, zfs_release_one, ha);
 	zfs_close(zhp);
 	return (rv);
 }
@@ -5198,7 +5225,7 @@ tryagain:
 
 	nvbuf = malloc(nvsz);
 	if (nvbuf == NULL) {
-		err = (zfs_error(hdl, EZFS_NOMEM, strerror(errno)));
+		err = (zfs_error(hdl, EZFS_NOMEM, zfs_strerror(errno)));
 		goto out;
 	}
 
@@ -5538,8 +5565,21 @@ volsize_from_vdevs(zpool_handle_t *zhp, uint64_t nblocks, uint64_t blksize)
 		/*
 		 * Scale this size down as a ratio of 128k / tsize.
 		 * See theory statement above.
+		 *
+		 * Bitshift is to avoid the case of nblocks * asize < tsize
+		 * producing a size of 0.
 		 */
-		volsize = nblocks * asize * SPA_OLD_MAXBLOCKSIZE / tsize;
+		volsize = (nblocks * asize) / (tsize >> SPA_MINBLOCKSHIFT);
+		/*
+		 * If we would blow UINT64_MAX with this next multiplication,
+		 * don't.
+		 */
+		if (volsize >
+		    (UINT64_MAX / (SPA_OLD_MAXBLOCKSIZE >> SPA_MINBLOCKSHIFT)))
+			volsize = UINT64_MAX;
+		else
+			volsize *= (SPA_OLD_MAXBLOCKSIZE >> SPA_MINBLOCKSHIFT);
+
 		if (volsize > ret) {
 			ret = volsize;
 		}
